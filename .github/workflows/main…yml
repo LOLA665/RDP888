@@ -1,0 +1,58 @@
+name: Setup Windows 11 RDP with Tailscale VPN
+
+on:
+  push:
+    branches: [main]
+
+env:
+  TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+  RDP_USERNAME: "rdpuser"
+  RDP_PASSWORD: "Parola1234"  # maxim 14 caractere
+
+jobs:
+  setup-windows-rdp:
+    runs-on: windows-latest
+    timeout-minutes: 720  # 12 ore
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Enable RDP and open firewall
+        run: |
+          Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" -Name "fDenyTSConnections" -Value 0
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+
+      - name: Add RDP user
+        run: |
+          net user $env:RDP_USERNAME $env:RDP_PASSWORD /add
+          net localgroup "Remote Desktop Users" $env:RDP_USERNAME /add
+
+      - name: Install Tailscale
+        run: |
+          Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/windows-amd64/TailscaleSetup.exe" -OutFile "$env:TEMP\TailscaleSetup.exe"
+          Start-Process -FilePath "$env:TEMP\TailscaleSetup.exe" -ArgumentList "/quiet" -Wait
+
+      - name: Authenticate Tailscale with auth key
+        run: tailscale up --auth-key=$env:TAILSCALE_AUTH_KEY --accept-routes --run-service
+
+      - name: Configure firewall for RDP over Tailscale
+        run: |
+          New-NetFirewallRule -DisplayName "Allow RDP TCP via Tailscale" -Direction Inbound -Protocol TCP -LocalPort 3389 -RemoteAddress 100.64.0.0/10 -Action Allow
+          New-NetFirewallRule -DisplayName "Allow RDP UDP via Tailscale" -Direction Inbound -Protocol UDP -LocalPort 3389 -RemoteAddress 100.64.0.0/10 -Action Allow
+
+      - name: Prevent Sleep - keep session alive 12 hours
+        run: |
+          powercfg /change standby-timeout-ac 720
+          powercfg /change monitor-timeout-ac 720
+          powercfg /change disk-timeout-ac 720
+
+      - name: Show connection details
+        run: |
+          $ip = tailscale ip -4
+          Write-Host "Connect to RDP IP: $ip"
+          Write-Host "User: $env:RDP_USERNAME"
+          Write-Host "Password: $env:RDP_PASSWORD"
+
+      - name: Keep workflow running for 12 hours
+        run: Start-Sleep -Seconds 43200
